@@ -367,7 +367,13 @@ auto_soil = models['district_soil_map'].get(selected_district, available_soils[0
 soil_idx = available_soils.index(auto_soil) if auto_soil in available_soils else 0
 
 with col_left:
-    selected_soil = st.selectbox("Soil Type (auto-detected from district)", available_soils, index=soil_idx, key="soil")
+    # Force soil update when district changes
+    if district_changed:
+        st.session_state.soil = auto_soil
+    
+    selected_soil = st.selectbox("Soil Type (auto-detected from district)", available_soils, 
+                                  index=available_soils.index(st.session_state.get('soil', auto_soil)) if st.session_state.get('soil', auto_soil) in available_soils else soil_idx,
+                                  key="soil")
     area_hectares = st.number_input("Cultivated Area (hectares)", value=1000.0, min_value=0.5, max_value=10000000.0, step=100.0)
     selected_season = st.selectbox("Season", available_seasons, key="season")
     
@@ -488,12 +494,12 @@ if st.button("Predict Crop and Yield", use_container_width=True, disabled=not (t
             <h3 style="color: #00ff88; margin-bottom: 20px; font-size: 1.8em;">Prediction Results</h3>
             <div style="display: flex; gap: 40px; flex-wrap: wrap;">
                 <div style="flex: 1; min-width: 250px;">
-                    <div class="big-result-label">Recommended Crop</div>
+                    <h3 style="color: #aab; font-size: 1.5em; font-weight: 600; margin-bottom: 5px;">Recommended Crop</h3>
                     <div class="big-result" style="color: #00ff88;">{crop_name.upper()}</div>
                     <div style="color: #00d4ff; font-size: 1.1em;">KNN Confidence: {knn_conf}</div>
                 </div>
                 <div style="flex: 1; min-width: 250px;">
-                    <div class="big-result-label">Predicted Yield</div>
+                    <h3 style="color: #aab; font-size: 1.5em; font-weight: 600; margin-bottom: 5px;">Predicted Yield</h3>
                     <div class="big-result" style="color: #00d4ff;">{predicted_yield:.2f}</div>
                     <div style="color: #aab; font-size: 1.1em;">tons / hectare</div>
                 </div>
