@@ -297,42 +297,86 @@ is_auto = (data_mode == "Auto-Detect from Location")
 
 st.markdown("---")
 
+# Show detection debug info (only in auto mode, collapsible)
+if is_auto and 'detection_log' in st.session_state:
+    with st.expander("Location Detection Log"):
+        for log_line in st.session_state.detection_log:
+            st.text(log_line)
+        if st.session_state.get('detected_city'):
+            st.success(f"Detected: {st.session_state.detected_city}")
+        else:
+            st.warning("Could not detect location. Defaulted to first district.")
+
 # ============================================================================
 # ONE-TIME INITIALIZATION
 # ============================================================================
 if 'app_ready' not in st.session_state:
+    # STEP 1: Detect location - try ALL APIs, longer timeout, debug info
     detected_city = None
+    detection_log = []
+    
     ip_apis = [
         ('http://ip-api.com/json/', lambda d: d.get('city')),
         ('https://ipapi.co/json/', lambda d: d.get('city')),
         ('https://ipinfo.io/json', lambda d: d.get('city')),
     ]
+    
     for api_url, api_parser in ip_apis:
         try:
-            resp = requests.get(api_url, timeout=15)
+            resp = requests.get(api_url, timeout=20)
             if resp.status_code == 200:
                 raw_city = api_parser(resp.json())
                 if raw_city:
-                    city_clean = raw_city.strip().title()
-                    city_mapped = DISTRICT_ALIASES.get(city_clean, city_clean)
-                    if city_mapped in available_districts:
-                        detected_city = city_mapped
-                    elif city_clean in available_districts:
-                        detected_city = city_clean
+                    raw_city = str(raw_city).strip()
+                    detection_log.append(f"API {api_url} returned: '{raw_city}'")
+                    
+                    # Try exact match first
+                    for d in available_districts:
+                        if d.lower() == raw_city.lower():
+                            detected_city = d
+                            break
+                    
+                    # Try alias mapping
+                    if not detected_city:
+                        for alias_key, alias_val in DISTRICT_ALIASES.items():
+                            if alias_key.lower() == raw_city.lower():
+                                for d in available_districts:
+                                    if d.lower() == alias_val.lower():
+                                        detected_city = d
+                                        break
+                                break
+                    
+                    # Try partial match (city name contained in district or vice versa)
+                    if not detected_city:
+                        for d in available_districts:
+                            if raw_city.lower() in d.lower() or d.lower() in raw_city.lower():
+                                detected_city = d
+                                break
+                    
                     if detected_city:
+                        detection_log.append(f"Matched to: '{detected_city}'")
                         break
-        except:
+                    else:
+                        detection_log.append(f"No match found for '{raw_city}'")
+        except Exception as e:
+            detection_log.append(f"API {api_url} failed: {str(e)[:50]}")
             continue
-
+    
+    # Store debug log
+    st.session_state.detection_log = detection_log
+    
+    # STEP 2: Set district
     if detected_city:
         st.session_state.district = detected_city
     else:
         st.session_state.district = available_districts[0]
-
+    
+    # STEP 3: Set soil
     st.session_state.soil = models['district_soil_map'].get(
         st.session_state.district, available_soils[0]
     )
-
+    
+    # STEP 4: Fetch weather
     weather_ok = False
     try:
         w = get_weather_for_district(st.session_state.district)
@@ -347,7 +391,7 @@ if 'app_ready' not in st.session_state:
             weather_ok = True
     except:
         pass
-
+    
     if not weather_ok:
         st.session_state.t_min = 18.0
         st.session_state.t_avg = 25.0
@@ -356,7 +400,7 @@ if 'app_ready' not in st.session_state:
         st.session_state.h_avg = 70
         st.session_state.h_max = 95
         st.session_state.rainfall = 150.0
-
+    
     st.session_state.detected_city = detected_city
     st.session_state.app_ready = True
     st.rerun()
