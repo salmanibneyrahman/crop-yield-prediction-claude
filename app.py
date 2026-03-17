@@ -49,9 +49,7 @@ st.markdown("""
         color: #00d4ff;
         border-bottom: 2px solid rgba(0, 212, 255, 0.3);
         padding-bottom: 10px;
-        font-weight: 700;
-        font-size: 1.8em;
-        letter-spacing: 1px;
+        font-weight: 700; font-size: 1.8em; letter-spacing: 1px;
     }
     [data-testid="stColumn"] {
         background: rgba(26, 31, 58, 0.5);
@@ -74,14 +72,12 @@ st.markdown("""
         border-radius: 8px !important;
         padding: 12px !important;
         font-weight: 600;
-        transition: all 0.3s ease;
     }
     body, p, span, div { color: #e0e0ff; }
     [data-testid="stMetric"] {
         background: linear-gradient(135deg, rgba(0, 212, 255, 0.1), rgba(0, 255, 136, 0.05));
         border: 1px solid rgba(0, 212, 255, 0.2);
-        border-radius: 12px;
-        padding: 20px;
+        border-radius: 12px; padding: 20px;
         backdrop-filter: blur(10px);
     }
     [data-testid="stMetricLabel"] { color: #00d4ff !important; font-weight: 700; }
@@ -196,7 +192,7 @@ def load_all():
         return None
 
 # ============================================================================
-# WEATHER FUNCTION
+# API FUNCTIONS (cached to avoid repeated calls)
 # ============================================================================
 @st.cache_data(ttl=600)
 def get_weather_for_district(district_name):
@@ -205,7 +201,7 @@ def get_weather_for_district(district_name):
     lat, lon = DISTRICT_COORDS[district_name]
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m&daily=temperature_2m_max,temperature_2m_min,relative_humidity_2m_max,relative_humidity_2m_min"
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
             data = response.json()
             current = data.get('current', {})
@@ -223,7 +219,7 @@ def get_weather_for_district(district_name):
                 end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
                 start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
                 rain_url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={start_date}&end_date={end_date}&daily=precipitation_sum"
-                rain_resp = requests.get(rain_url, timeout=5)
+                rain_resp = requests.get(rain_url, timeout=10)
                 if rain_resp.status_code == 200:
                     precip = rain_resp.json().get('daily', {}).get('precipitation_sum', [])
                     valid = [p for p in precip if p is not None]
@@ -236,21 +232,42 @@ def get_weather_for_district(district_name):
         pass
     return None
 
-def get_ip_location():
+@st.cache_data(ttl=300)
+def detect_ip_location():
+    """Cached IP detection - runs once, retries on fail"""
     apis = [
-        ('https://ipapi.co/json/', lambda d: (d.get('city'), d.get('latitude'), d.get('longitude'))),
-        ('http://ip-api.com/json/', lambda d: (d.get('city'), d.get('lat'), d.get('lon'))),
+        ('http://ip-api.com/json/', lambda d: d.get('city')),
+        ('https://ipapi.co/json/', lambda d: d.get('city')),
+        ('https://ipinfo.io/json', lambda d: d.get('city')),
     ]
     for url, parser in apis:
         try:
-            resp = requests.get(url, timeout=5)
+            resp = requests.get(url, timeout=10)
             if resp.status_code == 200:
-                city, lat, lon = parser(resp.json())
+                city = parser(resp.json())
                 if city:
-                    return DISTRICT_ALIASES.get(city, city)
+                    mapped = DISTRICT_ALIASES.get(city, city)
+                    return mapped
         except:
             continue
     return None
+
+def set_weather_state(district_name):
+    """Fetch weather and set all session state values"""
+    w = get_weather_for_district(district_name)
+    if w and w.get('avg_temp') is not None:
+        st.session_state.t_min = float(w['min_temp'] or 18.0)
+        st.session_state.t_avg = float(w['avg_temp'] or 25.0)
+        st.session_state.t_max = float(w['max_temp'] or 32.0)
+        st.session_state.h_min = int(w['min_humidity'] or 40)
+        st.session_state.h_avg = int(w['avg_humidity'] or 70)
+        st.session_state.h_max = int(w['max_humidity'] or 95)
+        if w.get('rainfall') is not None:
+            st.session_state.rainfall = float(w['rainfall'])
+        else:
+            st.session_state.rainfall = 150.0
+        return True
+    return False
 
 # ============================================================================
 # HEADER
@@ -266,19 +283,16 @@ st.markdown("""
 st.markdown("---")
 
 with st.expander("About System"):
-    col1, col2, col3 = st.columns(3)
-    with col1:
+    c1, c2, c3 = st.columns(3)
+    with c1:
         st.markdown('<div class="about-item"><h4>Yield Model</h4><p><strong>Type:</strong> Decision Tree</p><p><strong>R Score:</strong> 0.8621</p></div>', unsafe_allow_html=True)
-    with col2:
+    with c2:
         st.markdown('<div class="about-item"><h4>Crop Model</h4><p><strong>Type:</strong> KNN Classifier</p><p><strong>Accuracy:</strong> 0.8827</p></div>', unsafe_allow_html=True)
-    with col3:
+    with c3:
         st.markdown('<div class="about-item"><h4>Training Data</h4><p><strong>Records:</strong> 169,069</p><p><strong>Location:</strong> Bangladesh</p></div>', unsafe_allow_html=True)
 
 st.markdown("---")
 
-# ============================================================================
-# LOAD MODELS
-# ============================================================================
 models = load_all()
 if models is None:
     st.error("Could not load models. Ensure all 14 .pkl files are in the app folder.")
@@ -292,37 +306,51 @@ available_soils = list(models['soil_le'].classes_)
 # MODE SELECTION
 # ============================================================================
 st.markdown('<div class="section-header">How do you want to enter data?</div>', unsafe_allow_html=True)
-data_mode = st.radio("Select:", ["Auto-Detect from Location", "Manual Entry"], horizontal=True)
+
+def on_mode_change():
+    """When mode changes, reset data appropriately"""
+    mode = st.session_state.entry_mode
+    if mode == "Auto-Detect from Location":
+        # Switched TO auto: detect location, fetch weather, set soil
+        detected = detect_ip_location()
+        if detected and detected in available_districts:
+            st.session_state.district = detected
+        d = st.session_state.get('district', available_districts[0])
+        st.session_state.soil = models['district_soil_map'].get(d, available_soils[0])
+        set_weather_state(d)
+    # Manual mode: keep current values, user will change them
+
+data_mode = st.radio(
+    "Select:", ["Auto-Detect from Location", "Manual Entry"],
+    horizontal=True, key="entry_mode", on_change=on_mode_change
+)
+
+is_auto = (data_mode == "Auto-Detect from Location")
+
 st.markdown("---")
 
 # ============================================================================
-# INITIALIZE SESSION STATE (runs only once on first load)
+# ONE-TIME INITIALIZATION (first load only)
 # ============================================================================
 if 'app_ready' not in st.session_state:
-    # Detect default district
-    default_district = available_districts[0]
-    if data_mode == "Auto-Detect from Location":
-        detected = get_ip_location()
-        if detected and detected in available_districts:
-            default_district = detected
-
-    # Set district
-    st.session_state.district = default_district
-
-    # Set soil from district
-    st.session_state.soil = models['district_soil_map'].get(default_district, available_soils[0])
-
-    # Fetch weather for default district
-    w = get_weather_for_district(default_district)
-    if w and w.get('avg_temp') is not None:
-        st.session_state.t_min = float(w['min_temp'] or 18.0)
-        st.session_state.t_avg = float(w['avg_temp'] or 25.0)
-        st.session_state.t_max = float(w['max_temp'] or 32.0)
-        st.session_state.h_min = int(w['min_humidity'] or 40)
-        st.session_state.h_avg = int(w['avg_humidity'] or 70)
-        st.session_state.h_max = int(w['max_humidity'] or 95)
-        st.session_state.rainfall = float(w.get('rainfall') or 150.0)
+    # Detect IP location
+    detected_city = detect_ip_location()
+    
+    if detected_city and detected_city in available_districts:
+        st.session_state.district = detected_city
     else:
+        st.session_state.district = available_districts[0]
+    
+    # Set soil from district
+    st.session_state.soil = models['district_soil_map'].get(
+        st.session_state.district, available_soils[0]
+    )
+    
+    # Fetch weather for detected district
+    set_weather_state(st.session_state.district)
+    
+    # Defaults if weather fetch failed
+    if 't_min' not in st.session_state:
         st.session_state.t_min = 18.0
         st.session_state.t_avg = 25.0
         st.session_state.t_max = 32.0
@@ -330,30 +358,19 @@ if 'app_ready' not in st.session_state:
         st.session_state.h_avg = 70
         st.session_state.h_max = 95
         st.session_state.rainfall = 150.0
-
+    
     st.session_state.app_ready = True
     st.rerun()
 
 # ============================================================================
-# CALLBACK: fires when user changes district (BEFORE next render)
+# CALLBACKS
 # ============================================================================
 def on_district_change():
-    d = st.session_state.district
-    
-    # Update soil
-    st.session_state.soil = models['district_soil_map'].get(d, available_soils[0])
-    
-    # Fetch and update weather
-    w = get_weather_for_district(d)
-    if w and w.get('avg_temp') is not None:
-        st.session_state.t_min = float(w['min_temp'] or 18.0)
-        st.session_state.t_avg = float(w['avg_temp'] or 25.0)
-        st.session_state.t_max = float(w['max_temp'] or 32.0)
-        st.session_state.h_min = int(w['min_humidity'] or 40)
-        st.session_state.h_avg = int(w['avg_humidity'] or 70)
-        st.session_state.h_max = int(w['max_humidity'] or 95)
-        if w.get('rainfall') is not None:
-            st.session_state.rainfall = float(w['rainfall'])
+    """Only auto-fetch in Auto mode"""
+    if st.session_state.entry_mode == "Auto-Detect from Location":
+        d = st.session_state.district
+        st.session_state.soil = models['district_soil_map'].get(d, available_soils[0])
+        set_weather_state(d)
 
 # ============================================================================
 # DATA ENTRY
@@ -362,25 +379,33 @@ col_left, col_right = st.columns([1, 1])
 
 with col_left:
     st.markdown('<div class="section-header">Location and Farm Details</div>', unsafe_allow_html=True)
-
+    
     selected_district = st.selectbox(
         "District", available_districts,
         key="district",
         on_change=on_district_change
     )
-
-    selected_soil = st.selectbox(
-        "Soil Type (auto-detected from district)", available_soils,
-        key="soil"
-    )
-
+    
+    if is_auto:
+        # Auto mode: soil auto-detected, show as confirmation
+        selected_soil = st.selectbox(
+            "Soil Type (auto-detected from district)", available_soils,
+            key="soil"
+        )
+    else:
+        # Manual mode: user picks soil freely, no auto-detection
+        selected_soil = st.selectbox(
+            "Soil Type", available_soils,
+            key="soil"
+        )
+    
     area_hectares = st.number_input(
         "Cultivated Area (hectares)",
         value=1000.0, min_value=0.5, max_value=10000000.0, step=100.0
     )
-
+    
     selected_season = st.selectbox("Season", available_seasons, key="season")
-
+    
     rainfall = st.number_input(
         "Monthly Avg Rainfall (mm)",
         min_value=0.0, max_value=1000.0, step=10.0,
@@ -389,16 +414,19 @@ with col_left:
 
 with col_right:
     st.markdown('<div class="section-header">Weather Conditions</div>', unsafe_allow_html=True)
-
-    # Show fetch status
-    w_check = get_weather_for_district(selected_district)
-    if w_check and w_check.get('avg_temp') is not None:
-        st.success(f"Weather auto-fetched for {selected_district}")
-        if w_check.get('rainfall') is not None:
-            st.info(f"Rainfall (last 30 days): {w_check['rainfall']} mm")
+    
+    if is_auto:
+        # Show auto-fetch status
+        w_check = get_weather_for_district(selected_district)
+        if w_check and w_check.get('avg_temp') is not None:
+            st.success(f"Weather auto-fetched for {selected_district}")
+            if w_check.get('rainfall') is not None:
+                st.info(f"Rainfall (last 30 days): {w_check['rainfall']} mm")
+        else:
+            st.warning(f"Could not fetch weather for {selected_district}. Enter manually.")
     else:
-        st.warning(f"Could not fetch weather for {selected_district}. Enter manually.")
-
+        st.info("Manual mode: Enter all weather data manually.")
+    
     st.subheader("Temperature (Celsius)")
     tc1, tc2, tc3 = st.columns(3)
     with tc1:
@@ -407,7 +435,7 @@ with col_right:
         avg_temp = st.number_input("Avg Temp", key="t_avg")
     with tc3:
         max_temp = st.number_input("Max Temp", key="t_max")
-
+    
     st.subheader("Humidity (Percent)")
     hc1, hc2, hc3 = st.columns(3)
     with hc1:
@@ -437,10 +465,9 @@ st.markdown('<div class="section-header">Get Predictions</div>', unsafe_allow_ht
 
 if st.button("Predict Crop and Yield", use_container_width=True, disabled=not (temp_valid and hum_valid)):
     try:
-        # YIELD
         season_encoded = int(models['season_le'].transform([selected_season])[0])
         soil_encoded = int(models['soil_le'].transform([selected_soil])[0])
-
+        
         yield_df = pd.DataFrame({
             'Avg Temp': [avg_temp], 'Avg Humidity': [float(avg_humidity)],
             'Max Temp': [max_temp], 'Min Temp': [min_temp],
@@ -452,8 +479,7 @@ if st.button("Predict Crop and Yield", use_container_width=True, disabled=not (t
         yield_df = yield_df[models['feature_columns']]
         predicted_yield = float(models['yield_model'].predict(yield_df)[0])
         total_production = predicted_yield * area_hectares
-
-        # CROP
+        
         crop_input = pd.DataFrame(0.0, index=[0], columns=models['crop_feature_columns'])
         crop_input['Avg Temp'] = avg_temp
         crop_input['Avg Humidity'] = float(avg_humidity)
@@ -461,7 +487,7 @@ if st.button("Predict Crop and Yield", use_container_width=True, disabled=not (t
         crop_input['Min Temp'] = min_temp
         crop_input['Max Relative Humidity'] = float(max_humidity)
         crop_input['Min Relative Humidity'] = float(min_humidity)
-
+        
         season_col = f"Season_{selected_season}"
         if season_col in crop_input.columns:
             crop_input[season_col] = 1
@@ -471,14 +497,13 @@ if st.button("Predict Crop and Yield", use_container_width=True, disabled=not (t
         soil_col = f"Soil_{selected_soil}"
         if soil_col in crop_input.columns:
             crop_input[soil_col] = 1
-
+        
         crop_features_scaled = models['crop_scaler'].transform(crop_input)
-
+        
         crop_pred_code = int(models['crop_model'].predict(crop_features_scaled)[0])
         original_code = int(models['le_reencode'].inverse_transform([crop_pred_code])[0])
         crop_name = str(models['le_crop'].inverse_transform([original_code])[0])
-
-        # TOP 5 (LR soft probabilities)
+        
         lr_probas = models['lr_display'].predict_proba(crop_features_scaled)[0]
         top_5_indices = np.argsort(lr_probas)[-5:][::-1]
         top_5_crops = []
@@ -487,15 +512,15 @@ if st.button("Predict Crop and Yield", use_container_width=True, disabled=not (t
             name = str(models['le_crop'].inverse_transform([orig])[0])
             conf = float(lr_probas[idx]) * 100
             top_5_crops.append((name, conf))
-
+        
         knn_conf = "N/A"
         if hasattr(models['crop_model'], 'predict_proba'):
             knn_probas = models['crop_model'].predict_proba(crop_features_scaled)[0]
             knn_conf = f"{knn_probas.max():.1f}%"
-
+        
         # === RESULTS ===
         st.markdown("---")
-
+        
         st.markdown(f"""
         <div class="result-box">
             <h3 style="color: #00ff88; margin-bottom: 20px; font-size: 1.8em;">Prediction Results</h3>
@@ -513,10 +538,8 @@ if st.button("Predict Crop and Yield", use_container_width=True, disabled=not (t
             </div>
         </div>
         """, unsafe_allow_html=True)
-
-        # TOP 5
+        
         st.markdown('<div class="result-box"><h3 style="color: #00d4ff; font-size: 1.5em;">Top 5 Recommended Crops</h3>', unsafe_allow_html=True)
-
         for rank, (c_name, c_conf) in enumerate(top_5_crops, 1):
             bar_pct = min(c_conf, 100)
             bar_color = "#00ff88" if rank == 1 else "#00d4ff"
@@ -531,10 +554,8 @@ if st.button("Predict Crop and Yield", use_container_width=True, disabled=not (t
                 </div>
             </div>
             """, unsafe_allow_html=True)
-
         st.markdown('<p style="color:#888; font-size:0.85em; margin-top:10px;">Primary prediction: KNN | Confidence scores: Logistic Regression</p></div>', unsafe_allow_html=True)
-
-        # PRODUCTION
+        
         st.markdown('<div class="result-box"><h3 style="color: #00d4ff; font-size: 1.5em;">Production Forecast</h3>', unsafe_allow_html=True)
         pc1, pc2, pc3 = st.columns(3)
         with pc1:
@@ -544,8 +565,7 @@ if st.button("Predict Crop and Yield", use_container_width=True, disabled=not (t
         with pc3:
             st.metric("Season", selected_season)
         st.markdown('</div>', unsafe_allow_html=True)
-
-        # SUMMARY
+        
         st.markdown("---")
         st.subheader("Farm Summary")
         summary = pd.DataFrame({
@@ -559,15 +579,12 @@ if st.button("Predict Crop and Yield", use_container_width=True, disabled=not (t
                      f"{rainfall:.0f}"]
         })
         st.dataframe(summary, use_container_width=True, hide_index=True)
-
+        
     except Exception as e:
         st.error(f"Error: {str(e)}")
         import traceback
         st.code(traceback.format_exc())
 
-# ============================================================================
-# FOOTER
-# ============================================================================
 st.markdown("---")
 st.markdown("""
 <div style="text-align:center; padding:20px; color:#666;">
