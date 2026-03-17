@@ -7,13 +7,13 @@ from datetime import datetime, timedelta
 
 st.set_page_config(
     page_title="Crop Yield Prediction System",
-    page_icon="🌾",
+    page_icon="wheat",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
 # ============================================================================
-# CUSTOM CSS - SAME DESIGN AS ORIGINAL
+# CUSTOM CSS
 # ============================================================================
 st.markdown("""
     <style>
@@ -109,8 +109,18 @@ st.markdown("""
         margin: 15px 0;
         box-shadow: 0 8px 32px rgba(0, 212, 255, 0.15);
     }
-    .crop-name { color: #00ff88; font-size: 1.8em; font-weight: 900; letter-spacing: 2px; }
-    .confidence-score { color: #00d4ff; font-size: 1.5em; font-weight: 700; }
+    .big-result {
+        font-size: 2.2em;
+        font-weight: 900;
+        letter-spacing: 2px;
+        margin: 10px 0;
+    }
+    .big-result-label {
+        font-size: 1.1em;
+        font-weight: 600;
+        color: #aab;
+        margin-bottom: 5px;
+    }
     .image-container {
         border-radius: 15px;
         overflow: hidden;
@@ -182,12 +192,12 @@ DISTRICT_ALIASES = {
 }
 
 # ============================================================================
-# LOAD MODELS & DATA
+# LOAD MODELS
 # ============================================================================
 @st.cache_resource
 def load_all():
     try:
-        data = {
+        return {
             'yield_model': joblib.load('yield_model.pkl'),
             'crop_model': joblib.load('crop_model.pkl'),
             'lr_display': joblib.load('lr_display_model.pkl'),
@@ -203,16 +213,15 @@ def load_all():
             'district_soil_map': joblib.load('district_soil_map.pkl'),
             'available_districts': joblib.load('available_districts.pkl'),
         }
-        return data
     except Exception as e:
         st.error(f"Error loading models: {e}")
         return None
 
 # ============================================================================
-# WEATHER FUNCTIONS
+# WEATHER FUNCTION
 # ============================================================================
+@st.cache_data(ttl=600)
 def get_weather_for_district(district_name):
-    """Fetch weather using district coordinates"""
     if district_name not in DISTRICT_COORDS:
         return None
     lat, lon = DISTRICT_COORDS[district_name]
@@ -232,7 +241,6 @@ def get_weather_for_district(district_name):
                 'max_humidity': daily.get('relative_humidity_2m_max', [None])[0],
                 'rainfall': None
             }
-            # Fetch rainfall
             try:
                 end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
                 start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
@@ -251,7 +259,6 @@ def get_weather_for_district(district_name):
     return None
 
 def get_ip_location():
-    """Auto-detect location from IP"""
     apis = [
         ('https://ipapi.co/json/', lambda d: (d.get('city'), d.get('latitude'), d.get('longitude'))),
         ('http://ip-api.com/json/', lambda d: (d.get('city'), d.get('lat'), d.get('lon'))),
@@ -284,14 +291,14 @@ st.markdown("---")
 # ============================================================================
 # ABOUT SYSTEM
 # ============================================================================
-with st.expander("ℹ️ About System"):
+with st.expander("About System"):
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown('<div class="about-item"><h4>🌾 Yield Model</h4><p><strong>Type:</strong> Decision Tree</p><p><strong>R² Score:</strong> 0.8621</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="about-item"><h4>Yield Model</h4><p><strong>Type:</strong> Decision Tree</p><p><strong>R Score:</strong> 0.8621</p></div>', unsafe_allow_html=True)
     with col2:
-        st.markdown('<div class="about-item"><h4>🌱 Crop Model</h4><p><strong>Type:</strong> KNN Classifier</p><p><strong>Accuracy:</strong> 0.8827</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="about-item"><h4>Crop Model</h4><p><strong>Type:</strong> KNN Classifier</p><p><strong>Accuracy:</strong> 0.8827</p></div>', unsafe_allow_html=True)
     with col3:
-        st.markdown('<div class="about-item"><h4>📊 Training Data</h4><p><strong>Records:</strong> 169,069</p><p><strong>Location:</strong> Bangladesh</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="about-item"><h4>Training Data</h4><p><strong>Records:</strong> 169,069</p><p><strong>Location:</strong> Bangladesh</p></div>', unsafe_allow_html=True)
 
 st.markdown("---")
 
@@ -299,96 +306,102 @@ st.markdown("---")
 # LOAD MODELS
 # ============================================================================
 models = load_all()
-
 if models is None:
     st.error("Could not load models. Ensure all 14 .pkl files are in the app folder.")
     st.stop()
 
-# ============================================================================
-# MODE SELECTION
-# ============================================================================
-st.markdown('<div class="section-header">📡 How do you want to enter data?</div>', unsafe_allow_html=True)
-
-data_mode = st.radio("Select:", ["🛰️ Auto-Detect from Location", "✏️ Manual Entry"], horizontal=True)
-
-st.markdown("---")
-
-# ============================================================================
-# DISTRICT SELECTION (COMMON TO BOTH MODES)
-# ============================================================================
 available_districts = models['available_districts']
 available_seasons = list(models['season_le'].classes_)
 available_soils = list(models['soil_le'].classes_)
 
-# Auto-detect location for default district
+# ============================================================================
+# MODE SELECTION
+# ============================================================================
+st.markdown('<div class="section-header">How do you want to enter data?</div>', unsafe_allow_html=True)
+data_mode = st.radio("Select:", ["Auto-Detect from Location", "Manual Entry"], horizontal=True)
+st.markdown("---")
+
+# ============================================================================
+# INITIALIZE SESSION STATE
+# ============================================================================
+if 'prev_district' not in st.session_state:
+    st.session_state.prev_district = None
+
+# ============================================================================
+# DISTRICT SELECTION - auto-detect default
+# ============================================================================
 default_district_idx = 0
-if "🛰️" in data_mode:
+if data_mode == "Auto-Detect from Location":
     loc = get_ip_location()
     if loc and loc['city'] in available_districts:
         default_district_idx = available_districts.index(loc['city'])
 
+st.markdown('<div class="section-header">Location and Farm Details</div>', unsafe_allow_html=True)
+
 col_left, col_right = st.columns([1, 1])
 
 with col_left:
-    st.markdown('<div class="section-header">📍 Location & Farm Details</div>', unsafe_allow_html=True)
-    
     selected_district = st.selectbox("District", available_districts, index=default_district_idx, key="district")
-    
-    # Auto-detect soil from district
-    auto_soil = models['district_soil_map'].get(selected_district, available_soils[0])
-    soil_idx = available_soils.index(auto_soil) if auto_soil in available_soils else 0
-    
-    selected_soil = st.selectbox("Soil Type (auto-detected from district)", available_soils, index=soil_idx, key="soil")
-    
-    area_hectares = st.number_input("Cultivated Area (hectares)", value=1000.0, min_value=0.5, max_value=10000000.0, step=100.0)
-    
-    selected_season = st.selectbox("Season", available_seasons, key="season")
-    
-    rainfall = st.number_input("Monthly Avg Rainfall (mm)", value=150.0, min_value=0.0, max_value=1000.0, step=10.0, key="rainfall")
 
 # ============================================================================
-# WEATHER DATA (auto-fetch for selected district)
+# FETCH WEATHER FOR SELECTED DISTRICT (always, both modes)
 # ============================================================================
-# Fetch weather whenever district changes
 weather_data = get_weather_for_district(selected_district)
 
+# Detect district change and update session state
+district_changed = (st.session_state.prev_district != selected_district)
+if district_changed:
+    st.session_state.prev_district = selected_district
+    if weather_data and weather_data.get('avg_temp') is not None:
+        st.session_state.t_min = float(weather_data.get('min_temp') or 18.0)
+        st.session_state.t_avg = float(weather_data.get('avg_temp') or 25.0)
+        st.session_state.t_max = float(weather_data.get('max_temp') or 32.0)
+        st.session_state.h_min = int(weather_data.get('min_humidity') or 40)
+        st.session_state.h_avg = int(weather_data.get('avg_humidity') or 70)
+        st.session_state.h_max = int(weather_data.get('max_humidity') or 95)
+        st.session_state.rain = float(weather_data.get('rainfall') or 150.0)
+    st.rerun()
+
+# Auto-detect soil from district
+auto_soil = models['district_soil_map'].get(selected_district, available_soils[0])
+soil_idx = available_soils.index(auto_soil) if auto_soil in available_soils else 0
+
+with col_left:
+    selected_soil = st.selectbox("Soil Type (auto-detected from district)", available_soils, index=soil_idx, key="soil")
+    area_hectares = st.number_input("Cultivated Area (hectares)", value=1000.0, min_value=0.5, max_value=10000000.0, step=100.0)
+    selected_season = st.selectbox("Season", available_seasons, key="season")
+    
+    # Rainfall with auto-detected default
+    default_rain = st.session_state.get('rain', 150.0)
+    rainfall = st.number_input("Monthly Avg Rainfall (mm)", value=default_rain, min_value=0.0, max_value=1000.0, step=10.0, key="rainfall")
+
 with col_right:
-    st.markdown('<div class="section-header">🌡️ Weather Conditions</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Weather Conditions</div>', unsafe_allow_html=True)
     
     if weather_data and weather_data.get('avg_temp') is not None:
-        st.success(f"✅ Weather auto-fetched for {selected_district}")
-        
-        default_min_t = weather_data.get('min_temp', 18.0) or 18.0
-        default_avg_t = weather_data.get('avg_temp', 25.0) or 25.0
-        default_max_t = weather_data.get('max_temp', 32.0) or 32.0
-        default_min_h = weather_data.get('min_humidity', 40) or 40
-        default_avg_h = weather_data.get('avg_humidity', 70) or 70
-        default_max_h = weather_data.get('max_humidity', 95) or 95
-        
+        st.success(f"Weather auto-fetched for {selected_district}")
         if weather_data.get('rainfall') is not None:
-            st.info(f"🌧️ Rainfall (last 30 days): {weather_data['rainfall']} mm")
+            st.info(f"Rainfall (last 30 days): {weather_data['rainfall']} mm")
     else:
-        st.warning(f"⚠️ Could not fetch weather for {selected_district}. Enter manually.")
-        default_min_t, default_avg_t, default_max_t = 18.0, 25.0, 32.0
-        default_min_h, default_avg_h, default_max_h = 40, 70, 95
+        st.warning(f"Could not fetch weather for {selected_district}. Enter manually.")
     
-    st.subheader("Temperature (°C)")
+    st.subheader("Temperature (Celsius)")
     tc1, tc2, tc3 = st.columns(3)
     with tc1:
-        min_temp = st.number_input("Min Temp", value=default_min_t, key="t_min")
+        min_temp = st.number_input("Min Temp", value=st.session_state.get('t_min', 18.0), key="t_min")
     with tc2:
-        avg_temp = st.number_input("Avg Temp", value=default_avg_t, key="t_avg")
+        avg_temp = st.number_input("Avg Temp", value=st.session_state.get('t_avg', 25.0), key="t_avg")
     with tc3:
-        max_temp = st.number_input("Max Temp", value=default_max_t, key="t_max")
+        max_temp = st.number_input("Max Temp", value=st.session_state.get('t_max', 32.0), key="t_max")
     
-    st.subheader("Humidity (%)")
+    st.subheader("Humidity (Percent)")
     hc1, hc2, hc3 = st.columns(3)
     with hc1:
-        min_humidity = st.number_input("Min Humidity", value=default_min_h, min_value=0, max_value=100, key="h_min")
+        min_humidity = st.number_input("Min Humidity", value=st.session_state.get('h_min', 40), min_value=0, max_value=100, key="h_min")
     with hc2:
-        avg_humidity = st.number_input("Avg Humidity", value=default_avg_h, min_value=0, max_value=100, key="h_avg")
+        avg_humidity = st.number_input("Avg Humidity", value=st.session_state.get('h_avg', 70), min_value=0, max_value=100, key="h_avg")
     with hc3:
-        max_humidity = st.number_input("Max Humidity", value=default_max_h, min_value=0, max_value=100, key="h_max")
+        max_humidity = st.number_input("Max Humidity", value=st.session_state.get('h_max', 95), min_value=0, max_value=100, key="h_max")
 
 st.markdown("---")
 
@@ -399,40 +412,34 @@ temp_valid = min_temp <= avg_temp <= max_temp
 hum_valid = 0 <= min_humidity <= max_humidity <= 100
 
 if not temp_valid:
-    st.error("❌ Temperature must be: Min ≤ Avg ≤ Max")
+    st.error("Temperature must be: Min <= Avg <= Max")
 if not hum_valid:
-    st.error("❌ Humidity must be: 0 ≤ Min ≤ Max ≤ 100")
+    st.error("Humidity must be: 0 <= Min <= Max <= 100")
 
 # ============================================================================
-# PREDICT BUTTON
+# PREDICT
 # ============================================================================
-st.markdown('<div class="section-header">🔮 Get Predictions</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-header">Get Predictions</div>', unsafe_allow_html=True)
 
-if st.button("🚀 Predict Crop and Yield", use_container_width=True, disabled=not (temp_valid and hum_valid)):
+if st.button("Predict Crop and Yield", use_container_width=True, disabled=not (temp_valid and hum_valid)):
     try:
-        # === YIELD PREDICTION ===
+        # YIELD
         season_encoded = int(models['season_le'].transform([selected_season])[0])
         soil_encoded = int(models['soil_le'].transform([selected_soil])[0])
         
         yield_df = pd.DataFrame({
-            'Avg Temp': [avg_temp],
-            'Avg Humidity': [avg_humidity],
-            'Max Temp': [max_temp],
-            'Min Temp': [min_temp],
-            'Max Relative Humidity': [max_humidity],
-            'Min Relative Humidity': [min_humidity],
+            'Avg Temp': [avg_temp], 'Avg Humidity': [avg_humidity],
+            'Max Temp': [max_temp], 'Min Temp': [min_temp],
+            'Max Relative Humidity': [max_humidity], 'Min Relative Humidity': [min_humidity],
             'Monthly_Avg_Rainfall_mm': [rainfall],
-            'Season_Encoded': [season_encoded],
-            'Soil_Encoded': [soil_encoded]
+            'Season_Encoded': [season_encoded], 'Soil_Encoded': [soil_encoded]
         })
         yield_df = yield_df[models['feature_columns']]
-        
         predicted_yield = float(models['yield_model'].predict(yield_df)[0])
         total_production = predicted_yield * area_hectares
         
-        # === CROP PREDICTION ===
+        # CROP
         crop_input = pd.DataFrame(0.0, index=[0], columns=models['crop_feature_columns'])
-        
         crop_input['Avg Temp'] = avg_temp
         crop_input['Avg Humidity'] = avg_humidity
         crop_input['Max Temp'] = max_temp
@@ -443,11 +450,9 @@ if st.button("🚀 Predict Crop and Yield", use_container_width=True, disabled=n
         season_col = f"Season_{selected_season}"
         if season_col in crop_input.columns:
             crop_input[season_col] = 1
-        
         district_col = f"District_{selected_district}"
         if district_col in crop_input.columns:
             crop_input[district_col] = 1
-        
         soil_col = f"Soil_{selected_soil}"
         if soil_col in crop_input.columns:
             crop_input[soil_col] = 1
@@ -458,10 +463,9 @@ if st.button("🚀 Predict Crop and Yield", use_container_width=True, disabled=n
         original_code = int(models['le_reencode'].inverse_transform([crop_pred_code])[0])
         crop_name = str(models['le_crop'].inverse_transform([original_code])[0])
         
-        # === TOP 5 USING LR SOFT PROBABILITIES ===
+        # TOP 5 (LR soft probabilities)
         lr_probas = models['lr_display'].predict_proba(crop_features_scaled)[0]
         top_5_indices = np.argsort(lr_probas)[-5:][::-1]
-        
         top_5_crops = []
         for idx in top_5_indices:
             orig = int(models['le_reencode'].inverse_transform([int(idx)])[0])
@@ -469,27 +473,36 @@ if st.button("🚀 Predict Crop and Yield", use_container_width=True, disabled=n
             conf = float(lr_probas[idx]) * 100
             top_5_crops.append((name, conf))
         
-        # KNN confidence for main prediction
+        # KNN confidence
         knn_conf = "N/A"
         if hasattr(models['crop_model'], 'predict_proba'):
             knn_probas = models['crop_model'].predict_proba(crop_features_scaled)[0]
             knn_conf = f"{knn_probas.max():.1f}%"
         
-        # === DISPLAY RESULTS ===
+        # === RESULTS ===
         st.markdown("---")
         
-        st.markdown('<div class="result-box"><h3 style="color: #00ff88;">🎯 Prediction Results</h3>', unsafe_allow_html=True)
-        
-        rc1, rc2 = st.columns(2)
-        with rc1:
-            st.metric("🌱 Recommended Crop", crop_name.upper(), f"KNN Confidence: {knn_conf}")
-        with rc2:
-            st.metric("📊 Predicted Yield", f"{predicted_yield:.2f}", "tons/hectare")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
+        # MAIN RESULTS - BIG FONT
+        st.markdown(f"""
+        <div class="result-box">
+            <h3 style="color: #00ff88; margin-bottom: 20px; font-size: 1.8em;">Prediction Results</h3>
+            <div style="display: flex; gap: 40px; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 250px;">
+                    <div class="big-result-label">Recommended Crop</div>
+                    <div class="big-result" style="color: #00ff88;">{crop_name.upper()}</div>
+                    <div style="color: #00d4ff; font-size: 1.1em;">KNN Confidence: {knn_conf}</div>
+                </div>
+                <div style="flex: 1; min-width: 250px;">
+                    <div class="big-result-label">Predicted Yield</div>
+                    <div class="big-result" style="color: #00d4ff;">{predicted_yield:.2f}</div>
+                    <div style="color: #aab; font-size: 1.1em;">tons / hectare</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         
         # TOP 5 CROPS
-        st.markdown('<div class="result-box"><h3 style="color: #00d4ff;">🏆 Top 5 Recommended Crops</h3>', unsafe_allow_html=True)
+        st.markdown('<div class="result-box"><h3 style="color: #00d4ff; font-size: 1.5em;">Top 5 Recommended Crops</h3>', unsafe_allow_html=True)
         
         for rank, (c_name, c_conf) in enumerate(top_5_crops, 1):
             bar_pct = min(c_conf, 100)
@@ -509,7 +522,7 @@ if st.button("🚀 Predict Crop and Yield", use_container_width=True, disabled=n
         st.markdown('<p style="color:#888; font-size:0.85em; margin-top:10px;">Primary prediction: KNN | Confidence scores: Logistic Regression</p></div>', unsafe_allow_html=True)
         
         # PRODUCTION FORECAST
-        st.markdown('<div class="result-box"><h3 style="color: #00d4ff;">📈 Production Forecast</h3>', unsafe_allow_html=True)
+        st.markdown('<div class="result-box"><h3 style="color: #00d4ff; font-size: 1.5em;">Production Forecast</h3>', unsafe_allow_html=True)
         
         pc1, pc2, pc3 = st.columns(3)
         with pc1:
@@ -521,13 +534,12 @@ if st.button("🚀 Predict Crop and Yield", use_container_width=True, disabled=n
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # FARM SUMMARY
+        # SUMMARY
         st.markdown("---")
-        st.subheader("📋 Farm Summary")
-        
+        st.subheader("Farm Summary")
         summary = pd.DataFrame({
-            'Parameter': ['District', 'Soil Type', 'Season', 'Area (hectares)', 
-                         'Min Temp (°C)', 'Avg Temp (°C)', 'Max Temp (°C)',
+            'Parameter': ['District', 'Soil Type', 'Season', 'Area (hectares)',
+                         'Min Temp (C)', 'Avg Temp (C)', 'Max Temp (C)',
                          'Min Humidity (%)', 'Avg Humidity (%)', 'Max Humidity (%)',
                          'Rainfall (mm/month)'],
             'Value': [selected_district, selected_soil, selected_season, f"{area_hectares:,.0f}",
@@ -548,7 +560,7 @@ if st.button("🚀 Predict Crop and Yield", use_container_width=True, disabled=n
 st.markdown("---")
 st.markdown("""
 <div style="text-align:center; padding:20px; color:#666;">
-    <p>🌾 Smart Precision Agriculture System | Built with Streamlit</p>
+    <p>Smart Precision Agriculture System | Built with Streamlit</p>
     <p style="font-size:0.8em;">Powered by Machine Learning | Data: Bangladesh Agricultural Dataset</p>
 </div>
 """, unsafe_allow_html=True)
