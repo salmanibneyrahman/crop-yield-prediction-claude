@@ -254,6 +254,22 @@ def apply_district_data(district_name):
         if w.get('rainfall') is not None:
             st.session_state.rainfall = float(w['rainfall'])
 
+def get_current_season():
+    """Determine Bangladesh agricultural season from current date"""
+    today = datetime.now()
+    month = today.month
+    day = today.day
+    
+    # Kharif-1: March 16 - June 30
+    if (month == 3 and day >= 16) or (month in [4, 5]) or (month == 6):
+        return 'Kharif 1'
+    # Kharif-2: July 1 - October 15
+    elif (month in [7, 8, 9]) or (month == 10 and day <= 15):
+        return 'Kharif 2'
+    # Rabi: October 16 - March 15
+    else:
+        return 'Rabi'
+
 # ============================================================================
 # HEADER
 # ============================================================================
@@ -261,7 +277,7 @@ st.title("CROP YIELD PREDICTION SYSTEM")
 
 st.markdown("""
 <div class="image-container">
-    <img src="https://images.unsplash.com/photo-1574943320219-553eb213f72d?w=1200&q=80" style="width:100%; height:300px; object-fit:cover; border-radius:15px;" alt="Agriculture">
+    <img src="https://images.unsplash.com/photo-1574943320219-553eb213f72d?w=1200&q=80" style="width:100%; height:400px; object-fit:cover; border-radius:15px;" alt="Agriculture">
 </div>
 """, unsafe_allow_html=True)
 
@@ -406,7 +422,16 @@ with col_left:
         value=1000.0, min_value=0.5, max_value=10000000.0, step=100.0
     )
 
-    selected_season = st.selectbox("Season", available_seasons, key="season")
+    if is_auto:
+        # Auto-detect season from current date
+        auto_season = get_current_season()
+        season_idx = available_seasons.index(auto_season) if auto_season in available_seasons else 0
+        selected_season = st.selectbox(
+            f"Season (auto-detected: {auto_season})", 
+            available_seasons, index=season_idx, key="season"
+        )
+    else:
+        selected_season = st.selectbox("Season", available_seasons, key="season")
 
     rainfall = st.number_input(
         "Monthly Avg Rainfall (mm)",
