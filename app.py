@@ -4,6 +4,7 @@ import numpy as np
 import joblib
 import requests
 from datetime import datetime, timedelta
+from streamlit_js_eval import get_geolocation
 
 st.set_page_config(
     page_title="Crop Yield Prediction System",
@@ -160,11 +161,6 @@ DISTRICT_COORDS = {
     'Jamalpur': (24.9375, 89.9372),
 }
 
-DISTRICT_ALIASES = {
-    'Chittagong': 'Chattogram', 'Comilla': 'Cumilla',
-    'Jessore': 'Jashore', 'Bogra': 'Bogura', 'Barisal': 'Barishal',
-}
-
 # ============================================================================
 # LOAD MODELS
 # ============================================================================
@@ -232,6 +228,32 @@ def get_weather_for_district(district_name):
         pass
     return None
 
+def find_nearest_district(lat, lon, districts_list):
+    """Find the nearest district from coordinates"""
+    min_dist = float('inf')
+    nearest = districts_list[0]
+    for d_name, (d_lat, d_lon) in DISTRICT_COORDS.items():
+        if d_name in districts_list:
+            dist = ((lat - d_lat)**2 + (lon - d_lon)**2)**0.5
+            if dist < min_dist:
+                min_dist = dist
+                nearest = d_name
+    return nearest
+
+def apply_district_data(district_name):
+    """Set soil and weather for a given district"""
+    st.session_state.soil = models['district_soil_map'].get(district_name, available_soils[0])
+    w = get_weather_for_district(district_name)
+    if w and w.get('avg_temp') is not None:
+        st.session_state.t_min = float(w['min_temp'] or 18.0)
+        st.session_state.t_avg = float(w['avg_temp'] or 25.0)
+        st.session_state.t_max = float(w['max_temp'] or 32.0)
+        st.session_state.h_min = int(w['min_humidity'] or 40)
+        st.session_state.h_avg = int(w['avg_humidity'] or 70)
+        st.session_state.h_max = int(w['max_humidity'] or 95)
+        if w.get('rainfall') is not None:
+            st.session_state.rainfall = float(w['rainfall'])
+
 # ============================================================================
 # HEADER
 # ============================================================================
@@ -272,21 +294,8 @@ st.markdown('<div class="section-header">How do you want to enter data?</div>', 
 
 def on_mode_change():
     if st.session_state.entry_mode == "Auto-Detect from Location":
-        city = st.session_state.get('detected_city')
-        if city and city in available_districts:
-            st.session_state.district = city
-        d = st.session_state.get('district', available_districts[0])
-        st.session_state.soil = models['district_soil_map'].get(d, available_soils[0])
-        w = get_weather_for_district(d)
-        if w and w.get('avg_temp') is not None:
-            st.session_state.t_min = float(w['min_temp'] or 18.0)
-            st.session_state.t_avg = float(w['avg_temp'] or 25.0)
-            st.session_state.t_max = float(w['max_temp'] or 32.0)
-            st.session_state.h_min = int(w['min_humidity'] or 40)
-            st.session_state.h_avg = int(w['avg_humidity'] or 70)
-            st.session_state.h_max = int(w['max_humidity'] or 95)
-            if w.get('rainfall') is not None:
-                st.session_state.rainfall = float(w['rainfall'])
+        st.session_state.location_detected = False
+    # Manual mode: keep current values
 
 data_mode = st.radio(
     "Select:", ["Auto-Detect from Location", "Manual Entry"],
@@ -297,113 +306,67 @@ is_auto = (data_mode == "Auto-Detect from Location")
 
 st.markdown("---")
 
-# Show detection debug info (only in auto mode, collapsible)
-if is_auto and 'detection_log' in st.session_state:
-    with st.expander("Location Detection Log"):
-        for log_line in st.session_state.detection_log:
-            st.text(log_line)
-        if st.session_state.get('detected_city'):
-            st.success(f"Detected: {st.session_state.detected_city}")
-        else:
-            st.warning("Could not detect location. Defaulted to first district.")
-
 # ============================================================================
-# ONE-TIME INITIALIZATION
+# ONE-TIME INITIALIZATION (defaults only)
 # ============================================================================
 if 'app_ready' not in st.session_state:
-    # STEP 1: Detect location - try ALL APIs, longer timeout, debug info
-    detected_city = None
-    detection_log = []
-    
-    ip_apis = [
-        ('http://ip-api.com/json/', lambda d: d.get('city')),
-        ('https://ipapi.co/json/', lambda d: d.get('city')),
-        ('https://ipinfo.io/json', lambda d: d.get('city')),
-    ]
-    
-    for api_url, api_parser in ip_apis:
-        try:
-            resp = requests.get(api_url, timeout=20)
-            if resp.status_code == 200:
-                raw_city = api_parser(resp.json())
-                if raw_city:
-                    raw_city = str(raw_city).strip()
-                    detection_log.append(f"API {api_url} returned: '{raw_city}'")
-                    
-                    # Try exact match first
-                    for d in available_districts:
-                        if d.lower() == raw_city.lower():
-                            detected_city = d
-                            break
-                    
-                    # Try alias mapping
-                    if not detected_city:
-                        for alias_key, alias_val in DISTRICT_ALIASES.items():
-                            if alias_key.lower() == raw_city.lower():
-                                for d in available_districts:
-                                    if d.lower() == alias_val.lower():
-                                        detected_city = d
-                                        break
-                                break
-                    
-                    # Try partial match (city name contained in district or vice versa)
-                    if not detected_city:
-                        for d in available_districts:
-                            if raw_city.lower() in d.lower() or d.lower() in raw_city.lower():
-                                detected_city = d
-                                break
-                    
-                    if detected_city:
-                        detection_log.append(f"Matched to: '{detected_city}'")
-                        break
-                    else:
-                        detection_log.append(f"No match found for '{raw_city}'")
-        except Exception as e:
-            detection_log.append(f"API {api_url} failed: {str(e)[:50]}")
-            continue
-    
-    # Store debug log
-    st.session_state.detection_log = detection_log
-    
-    # STEP 2: Set district
-    if detected_city:
-        st.session_state.district = detected_city
-    else:
-        st.session_state.district = available_districts[0]
-    
-    # STEP 3: Set soil
-    st.session_state.soil = models['district_soil_map'].get(
-        st.session_state.district, available_soils[0]
-    )
-    
-    # STEP 4: Fetch weather
-    weather_ok = False
-    try:
-        w = get_weather_for_district(st.session_state.district)
-        if w and w.get('avg_temp') is not None:
-            st.session_state.t_min = float(w['min_temp'] or 18.0)
-            st.session_state.t_avg = float(w['avg_temp'] or 25.0)
-            st.session_state.t_max = float(w['max_temp'] or 32.0)
-            st.session_state.h_min = int(w['min_humidity'] or 40)
-            st.session_state.h_avg = int(w['avg_humidity'] or 70)
-            st.session_state.h_max = int(w['max_humidity'] or 95)
-            st.session_state.rainfall = float(w.get('rainfall') or 150.0)
-            weather_ok = True
-    except:
-        pass
-    
-    if not weather_ok:
-        st.session_state.t_min = 18.0
-        st.session_state.t_avg = 25.0
-        st.session_state.t_max = 32.0
-        st.session_state.h_min = 40
-        st.session_state.h_avg = 70
-        st.session_state.h_max = 95
-        st.session_state.rainfall = 150.0
-    
-    st.session_state.detected_city = detected_city
+    st.session_state.district = available_districts[0]
+    st.session_state.soil = models['district_soil_map'].get(available_districts[0], available_soils[0])
+    st.session_state.t_min = 18.0
+    st.session_state.t_avg = 25.0
+    st.session_state.t_max = 32.0
+    st.session_state.h_min = 40
+    st.session_state.h_avg = 70
+    st.session_state.h_max = 95
+    st.session_state.rainfall = 150.0
+    st.session_state.detected_city = None
     st.session_state.app_ready = True
+    st.session_state.location_detected = False
     st.rerun()
+
+# ============================================================================
+# AUTO MODE: Browser GPS Detection
+# ============================================================================
+if is_auto and not st.session_state.get('location_detected', False):
+    st.markdown("""
+    <div style="background: rgba(0,212,255,0.1); border: 1px solid rgba(0,212,255,0.3); 
+         border-radius: 10px; padding: 15px; margin: 10px 0;">
+        <p style="color: #00d4ff; font-weight: 700; font-size: 1.1em;">
+            Detecting your location via browser GPS...</p>
+        <p style="color: #aab;">Please click "Allow" when your browser asks for location permission.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Get browser GPS location
+    loc = get_geolocation()
+    
+    if loc is not None and loc != 0 and isinstance(loc, dict) and 'coords' in loc:
+        lat = loc['coords']['latitude']
+        lon = loc['coords']['longitude']
+        
+        # Find nearest district
+        nearest = find_nearest_district(lat, lon, available_districts)
+        
+        # Set district, soil, weather
+        st.session_state.district = nearest
+        st.session_state.detected_city = nearest
+        st.session_state.location_detected = True
+        apply_district_data(nearest)
+        
+        st.rerun()
+    else:
+        # Still waiting or denied
+        if st.button("Skip detection - select district manually"):
+            st.session_state.location_detected = True
+            st.rerun()
+        st.stop()
+
+elif is_auto and st.session_state.get('location_detected', False):
+    detected = st.session_state.get('detected_city')
+    if detected:
+        st.success(f"Location detected: {detected} | Weather, soil, and rainfall auto-loaded")
+    else:
+        st.info("Location skipped. Select your district below.")
 
 # ============================================================================
 # CALLBACKS
@@ -411,17 +374,7 @@ if 'app_ready' not in st.session_state:
 def on_district_change():
     if st.session_state.entry_mode == "Auto-Detect from Location":
         d = st.session_state.district
-        st.session_state.soil = models['district_soil_map'].get(d, available_soils[0])
-        w = get_weather_for_district(d)
-        if w and w.get('avg_temp') is not None:
-            st.session_state.t_min = float(w['min_temp'] or 18.0)
-            st.session_state.t_avg = float(w['avg_temp'] or 25.0)
-            st.session_state.t_max = float(w['max_temp'] or 32.0)
-            st.session_state.h_min = int(w['min_humidity'] or 40)
-            st.session_state.h_avg = int(w['avg_humidity'] or 70)
-            st.session_state.h_max = int(w['max_humidity'] or 95)
-            if w.get('rainfall') is not None:
-                st.session_state.rainfall = float(w['rainfall'])
+        apply_district_data(d)
 
 # ============================================================================
 # DATA ENTRY
